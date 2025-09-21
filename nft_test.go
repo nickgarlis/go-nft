@@ -1,6 +1,7 @@
 package nft_test
 
 import (
+	"flag"
 	"net/netip"
 	"runtime"
 	"testing"
@@ -12,8 +13,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var itests = flag.Bool("integration_tests", false, "Run tests that operate against the live kernel")
+
 func OpenSystemConn(t *testing.T) (*nft.Conn, func()) {
 	t.Helper()
+	if !*itests {
+		t.SkipNow()
+	}
 	runtime.LockOSThread()
 	netns, err := netns.New()
 	if err != nil {

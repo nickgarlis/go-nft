@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+
+    - uses: actions/checkout@v3
+
+    - name: Set up Go 1.24
+      uses: actions/setup-go@v4
+      with:
+        go-version: ^1.24
+      id: go
+
+    - name: Check formatting
+      run: |
+        if [ -n "$(gofmt -l .)" ]; then
+            echo "Go files are not formatted. Run 'gofmt -w .'"
+            exit 1
+        fi
+
+    - name: Run tests
+      run: |
+        go vet .
+
+        go test ./...
+
+        go test -c github.com/nickgarlis/go-nft/nftnl -o nftnl.test
+        sudo ./nftnl.test -test.v -integration_tests
+
+        go test -c github.com/nickgarlis/go-nft -o nft.test
+        sudo ./nft.test -test.v -integration_tests

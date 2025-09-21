@@ -1,6 +1,7 @@
 package nftnl_test
 
 import (
+	"flag"
 	"runtime"
 	"testing"
 
@@ -10,8 +11,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var itests = flag.Bool("integration_tests", false, "Run tests that operate against the live kernel")
+
 func OpenSystemConn(t *testing.T) (*nftnl.Conn, func()) {
 	t.Helper()
+	if !*itests {
+		t.SkipNow()
+	}
 	runtime.LockOSThread()
 	netns, err := netns.New()
 	if err != nil {
