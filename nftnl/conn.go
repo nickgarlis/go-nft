@@ -1,9 +1,7 @@
 package nftnl
 
 import (
-	"errors"
 	"fmt"
-	"syscall"
 
 	"github.com/mdlayher/netlink"
 	"golang.org/x/sys/unix"
@@ -40,11 +38,35 @@ func (c *Conn) send(msg Msg) ([]netlink.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := c.nlconn.Execute(nlMsg)
+
+	req, err := c.nlconn.Send(nlMsg)
 	if err != nil {
 		return nil, err
 	}
-	return res, err
+
+	res, err := c.nlconn.Receive()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(res) == 0 {
+		return res, nil
+	}
+
+	if res[0].Header.Sequence != req.Header.Sequence {
+		return nil, fmt.Errorf("send: expected response with sequence %d, got %d", req.Header.Sequence, res[0].Header.Sequence)
+	}
+
+	if nlMsg.Header.Flags&netlink.Acknowledge == 0 {
+		return res, nil
+	}
+
+	if nlMsg.Header.Flags&netlink.Dump == netlink.Dump {
+		return res, nil
+	}
+
+	// TODO: Validate ack message and sequence number ?
+	return c.nlconn.Receive()
 }
 
 func (c *Conn) Send(msg Msg) ([]Msg, error) {
@@ -82,54 +104,76 @@ func (c *Conn) sendBatch(msgs []Msg) ([]netlink.Message, error) {
 }
 
 func (c *Conn) SendBatch(batch *Batch) error {
-	nlMsgs, err := batch.Marshal()
+	batchMsgs, err := batch.Marshal()
 	if err != nil {
 		return err
 	}
 
-	_, err = c.sendBatch(nlMsgs)
-	if err != nil {
-		return err
-	}
-
-	// TODO: handle echo messages
-
-	var errs error
-
-	for _, m := range batch.messages {
-		if m.Header.Flags&netlink.Acknowledge == 0 {
-			continue
+	// TODO: Maybe allow echo messages in batch ?
+	// That would complicate response handling though.
+	for _, m := range batchMsgs {
+		if m.Header.Flags&netlink.Echo == netlink.Echo {
+			return fmt.Errorf("SendBatch: batch cannot contain echo messages")
 		}
-		ack, err := c.nlconn.Receive()
+
+		if m.Header.Flags&netlink.Dump == netlink.Dump {
+			return fmt.Errorf("SendBatch: batch cannot contain dump messages")
+		}
+	}
+
+	if _, err = c.sendBatch(batchMsgs); err != nil {
+		return err
+	}
+
+	var firstError error
+
+	for {
+		ready, err := c.isReadReady()
 		if err != nil {
-			// If the error is a kernel error, there will be no more acks to read.
-			// Return the kernel error as the main error.
-			// Any other errors are collected and returned at the end.
-			var errno syscall.Errno
-			if errors.As(err, &errno) {
-				err = fmt.Errorf("kernel error: %s: %w", m.Header.MsgTypeString(), errno)
-				switch errno {
-				// If any of these errors are encountered,
-				// there will be no more acks to read.
-				// TODO: is there a better way to detect this?
-				// See: https://github.com/torvalds/linux/blob/36a686c0784fcccdaa4f38b498a9ef0d42ea7cb8/net/netfilter/nfnetlink.c#L371
-				case syscall.EPERM, syscall.ENOBUFS, syscall.ENOMEM, syscall.EOPNOTSUPP:
-					return err
-				}
-			}
-			errs = errors.Join(errs, err)
+			return err
 		}
-
-		if len(ack) == 0 {
-			errors.Join(errs, fmt.Errorf("SendBatch: no ack received"))
+		if !ready {
+			break
+		}
+		if _, err = c.nlconn.Receive(); err != nil {
+			firstError = err
 		}
 	}
 
-	if errs != nil {
-		return errs
+	if firstError != nil {
+		return firstError
 	}
 
 	return nil
+}
+
+// isReadReady checks if there is data available to read from the netlink
+// socket. It uses pselect with a zero timeout. If an error occurs during the
+// pselect call, it is returned.
+func (c *Conn) isReadReady() (bool, error) {
+	rawConn, err := c.nlconn.SyscallConn()
+	if err != nil {
+		return false, fmt.Errorf("get raw conn: %w", err)
+	}
+
+	var readErr error
+	var n int
+	err = rawConn.Read(func(fd uintptr) bool {
+		var readfds unix.FdSet
+		readfds.Zero()
+		readfds.Set(int(fd))
+		n, readErr = unix.Pselect(
+			int(fd)+1, &readfds, nil, nil, &unix.Timespec{}, nil,
+		)
+		// Return true to stop retrying immediately (no polling)
+		return true
+	})
+
+	if err != nil {
+		return false, err
+	}
+
+	return n > 0, readErr
 }
 
 func (c *Conn) Close() error {
