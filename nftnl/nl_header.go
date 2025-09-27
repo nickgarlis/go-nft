@@ -38,8 +38,10 @@ func (h *Header) MsgTypeString() string {
 		case unix.NFT_MSG_DELRULE:
 			return "NFT_MSG_DELRULE"
 		}
+		return fmt.Sprintf("unknown message type %d", h.MsgType)
 	}
-	return fmt.Sprintf("unknown msg type %d", h.MsgType)
+
+	return fmt.Sprintf("unknown subsystem %d", h.SubsysID)
 }
 
 func (h *Header) marshal() netlink.Header {
@@ -58,6 +60,7 @@ func (h *Header) marshal() netlink.Header {
 }
 
 func (h *Header) unmarshal(header netlink.Header) error {
+	h.SubsysID = uint16(header.Type >> 8)
 	h.MsgType = uint16(header.Type & 0xff)
 	h.Flags = header.Flags
 	return nil
