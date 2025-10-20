@@ -2,6 +2,7 @@ package nftnl
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/mdlayher/netlink"
 	"golang.org/x/sys/unix"
@@ -16,6 +17,7 @@ type Config struct {
 type Conn struct {
 	// netlink socket using NETLINK_NETFILTER protocol.
 	nlconn *netlink.Conn
+	mu     sync.Mutex
 }
 
 func Open(config *Config) (*Conn, error) {
@@ -70,6 +72,9 @@ func (c *Conn) send(msg Msg) ([]netlink.Message, error) {
 }
 
 func (c *Conn) Send(msg Msg) ([]Msg, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	resMsg, err := c.send(msg)
 	if err != nil {
 		return nil, err
@@ -104,6 +109,9 @@ func (c *Conn) sendBatch(msgs []Msg) ([]netlink.Message, error) {
 }
 
 func (c *Conn) SendBatch(batch *Batch) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	batchMsgs, err := batch.Marshal()
 	if err != nil {
 		return err
@@ -177,5 +185,7 @@ func (c *Conn) isReadReady() (bool, error) {
 }
 
 func (c *Conn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.nlconn.Close()
 }
