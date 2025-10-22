@@ -146,35 +146,33 @@ func (c *Conn) unmarshalNetlinkMessages(msgs []netlink.Message) ([]Msg, error) {
 	return result, nil
 }
 
-func (c *Conn) SendBatch(batch *Batch) error {
+func (c *Conn) SendBatch(batch *Batch) ([]Msg, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	batchMsgs, err := batch.Marshal()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// TODO: Maybe allow echo messages in batch ?
 	// That would complicate response handling though.
 	for _, m := range batchMsgs {
 		if m.Header.Flags&netlink.Echo == netlink.Echo {
-			return fmt.Errorf("SendBatch: batch cannot contain echo messages")
+			return nil, fmt.Errorf("SendBatch: batch cannot contain echo messages")
 		}
 
 		if m.Header.Flags&netlink.Dump == netlink.Dump {
-			return fmt.Errorf("SendBatch: batch cannot contain dump messages")
+			return nil, fmt.Errorf("SendBatch: batch cannot contain dump messages")
 		}
 	}
 
 	_, err = c.sendMessages(batchMsgs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	_, err = c.receive()
-
-	return err
+	return c.receive()
 }
 
 // isReadReady checks if there is data available to read from the netlink

@@ -23,5 +23,6 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) SendBatch(b *Batch) error {
-	return c.nftnlConn.SendBatch(b.nftnlBatch)
+	_, err := c.nftnlConn.SendBatch(b.nftnlBatch)
+	return err
 }

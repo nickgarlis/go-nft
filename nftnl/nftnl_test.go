@@ -40,7 +40,7 @@ func OpenSystemConn(t *testing.T) (*nftnl.Conn, func()) {
 			Family: unix.NFPROTO_UNSPEC,
 		},
 	})
-	if err := conn.SendBatch(batch); err != nil {
+	if _, err := conn.SendBatch(batch); err != nil {
 		t.Fatalf("failed to flush ruleset during setup: %v", err)
 	}
 	closer := func() {
@@ -57,7 +57,7 @@ func OpenSystemConn(t *testing.T) (*nftnl.Conn, func()) {
 				Family: unix.NFPROTO_UNSPEC,
 			},
 		})
-		if err := conn.SendBatch(batch); err != nil {
+		if _, err := conn.SendBatch(batch); err != nil {
 			t.Fatalf("failed to flush ruleset during setup: %v", err)
 		}
 		connCloseErr := conn.Close()
@@ -90,7 +90,7 @@ func TestCreateTable(t *testing.T) {
 			Name: "test-table",
 		},
 	})
-	if err := conn.SendBatch(batch); err != nil {
+	if _, err := conn.SendBatch(batch); err != nil {
 		t.Fatalf("failed to create table: %v", err)
 	}
 
