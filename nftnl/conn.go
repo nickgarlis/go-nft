@@ -35,66 +35,90 @@ func Open(config *Config) (*Conn, error) {
 	}, nil
 }
 
-func (c *Conn) send(msg Msg) ([]netlink.Message, error) {
-	nlMsg, err := msg.marshal()
-	if err != nil {
-		return nil, err
+func (c *Conn) receive() ([]Msg, error) {
+	var replies []netlink.Message
+	var firstErr error
+	for {
+		ready, err := c.isReadReady()
+		if err != nil {
+			return nil, err
+		}
+		if !ready {
+			break
+		}
+
+		res, err := c.nlconn.Receive()
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+
+		for _, m := range res {
+			// Filter out non-nftables messages.
+			// In practice, this would only be netlink.Error messages.
+			// Those are handled by the netlink library itself and should be reported
+			// as errors by nlconn.Receive().
+			subsystem := m.Header.Type >> 8
+			if subsystem != unix.NFNL_SUBSYS_NFTABLES {
+				continue
+			}
+
+			replies = append(replies, m)
+		}
 	}
 
-	req, err := c.nlconn.Send(nlMsg)
-	if err != nil {
-		return nil, err
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	res, err := c.nlconn.Receive()
-	if err != nil {
-		return nil, err
-	}
-
-	if len(res) == 0 {
-		return res, nil
-	}
-
-	if res[0].Header.Sequence != req.Header.Sequence {
-		return nil, fmt.Errorf("send: expected response with sequence %d, got %d", req.Header.Sequence, res[0].Header.Sequence)
-	}
-
-	if nlMsg.Header.Flags&netlink.Acknowledge == 0 {
-		return res, nil
-	}
-
-	if nlMsg.Header.Flags&netlink.Dump == netlink.Dump {
-		return res, nil
-	}
-
-	// TODO: Validate ack message and sequence number ?
-	return c.nlconn.Receive()
+	return c.unmarshalNetlinkMessages(replies)
 }
 
 func (c *Conn) Send(msg Msg) ([]Msg, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	resMsg, err := c.send(msg)
+	_, err := c.sendMessage(msg)
 	if err != nil {
 		return nil, err
 	}
 
-	results := make([]Msg, len(resMsg))
-
-	for i, m := range resMsg {
-		msg := Msg{}
-		if err := msg.unmarshal(m); err != nil {
-			return nil, err
-		}
-
-		results[i] = msg
-	}
-
-	return results, nil
+	return c.receive()
 }
 
-func (c *Conn) sendBatch(msgs []Msg) ([]netlink.Message, error) {
+func (c *Conn) sendMessages(msgs []Msg) ([]Msg, error) {
+	nlMsgs, err := c.marshalNetlinkMessages(msgs)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := c.nlconn.SendMessages(nlMsgs)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.unmarshalNetlinkMessages(res)
+}
+
+func (c *Conn) sendMessage(msg Msg) (Msg, error) {
+	nlMsg, err := msg.marshal()
+	if err != nil {
+		return Msg{}, err
+	}
+
+	res, err := c.nlconn.Send(nlMsg)
+	if err != nil {
+		return Msg{}, err
+	}
+
+	msgRes := Msg{}
+	if err := msgRes.unmarshal(res); err != nil {
+		return Msg{}, err
+	}
+
+	return msgRes, nil
+}
+
+func (c *Conn) marshalNetlinkMessages(msgs []Msg) ([]netlink.Message, error) {
 	nlMsgs := make([]netlink.Message, len(msgs))
 
 	for i, msg := range msgs {
@@ -105,7 +129,21 @@ func (c *Conn) sendBatch(msgs []Msg) ([]netlink.Message, error) {
 		nlMsgs[i] = nlMsg
 	}
 
-	return c.nlconn.SendMessages(nlMsgs)
+	return nlMsgs, nil
+}
+
+func (c *Conn) unmarshalNetlinkMessages(msgs []netlink.Message) ([]Msg, error) {
+	result := make([]Msg, len(msgs))
+
+	for i, m := range msgs {
+		msg := Msg{}
+		if err := msg.unmarshal(m); err != nil {
+			return nil, err
+		}
+		result[i] = msg
+	}
+
+	return result, nil
 }
 
 func (c *Conn) SendBatch(batch *Batch) error {
@@ -129,30 +167,14 @@ func (c *Conn) SendBatch(batch *Batch) error {
 		}
 	}
 
-	if _, err = c.sendBatch(batchMsgs); err != nil {
+	_, err = c.sendMessages(batchMsgs)
+	if err != nil {
 		return err
 	}
 
-	var firstError error
+	_, err = c.receive()
 
-	for {
-		ready, err := c.isReadReady()
-		if err != nil {
-			return err
-		}
-		if !ready {
-			break
-		}
-		if _, err = c.nlconn.Receive(); err != nil {
-			firstError = err
-		}
-	}
-
-	if firstError != nil {
-		return firstError
-	}
-
-	return nil
+	return err
 }
 
 // isReadReady checks if there is data available to read from the netlink
